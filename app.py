@@ -15,6 +15,26 @@ from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT, TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import letter
 
+
+def call_with_retries(func, *args, timeout=300, retries=1, **kwargs):
+    """Execute a function with a timeout and retry logic."""
+    last_exception = None
+    for attempt in range(retries + 1):
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(func, *args, **kwargs)
+                return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            last_exception = TimeoutError(f"{func.__name__} timed out after {timeout} seconds")
+            if attempt < retries:
+                st.warning(f"{func.__name__} timed out. Retrying ({attempt + 1}/{retries})...")
+        except Exception as e:
+            last_exception = e
+            if attempt < retries:
+                st.warning(f"Error in {func.__name__}: {e}. Retrying ({attempt + 1}/{retries})...")
+    st.error(f"All retries failed for {func.__name__}: {last_exception}")
+    return None
+
 def extract_text_from_pdf(uploaded_file_object):
     """Extracts text from all pages of an uploaded PDF file object,
     performing cleaning to remove problematic characters.
@@ -47,8 +67,8 @@ def extract_text_from_pdf(uploaded_file_object):
         return None
     return "\n".join(text_parts).strip() if text_parts else None
 
-def get_gemini_detailed_summary(api_key, transcript_text):
-    """Gets a detailed summary from Gemini.
+def get_gemini_detailed_summary(api_key, transcript_text, timeout=300, retries=1):
+    """Gets a detailed summary from Gemini with retry and timeout support.
     Uses the model name 'gemini-2.5-pro-preview-05-06'.
     """
     if not api_key:
@@ -61,15 +81,14 @@ def get_gemini_detailed_summary(api_key, transcript_text):
         "the clinician's performance and any relevant feedback they received from the trainer."
     )
     full_prompt = f"{prompt}\n\nTranscription Text:\n{transcript_text}"
-    try:
+    def _call():
         response = model.generate_content(full_prompt)
         return response.text
-    except Exception as e:
-        st.error(f"Error calling Gemini API for detailed summary: {e}")
-        return None
 
-def get_openai_concise_summary(api_key, detailed_summary_text):
-    """Gets a concise summary from OpenAI's gpt-4o model."""
+    return call_with_retries(_call, timeout=timeout, retries=retries)
+
+def get_openai_concise_summary(api_key, detailed_summary_text, timeout=300, retries=1):
+    """Gets a concise summary from OpenAI's gpt-4o model with retry and timeout support."""
     if not api_key:
         st.error("OpenAI API Key is not provided.")
         return None
@@ -77,7 +96,7 @@ def get_openai_concise_summary(api_key, detailed_summary_text):
         st.warning("Detailed summary (from Gemini) is not available for OpenAI processing.")
         return None
     
-    try:
+    def _call():
         client = openai.OpenAI(api_key=api_key)
         response = client.chat.completions.create(
             model="gpt-4o",
@@ -85,14 +104,12 @@ def get_openai_concise_summary(api_key, detailed_summary_text):
                 {"role": "system", "content": "You are an expert in summarizing clinical session transcripts."},
                 {"role": "user", "content": f"Condense the following detailed summary into a concise overview capturing all of its salient points. The output should be a single paragraph.\n\nDetailed Summary:\n{detailed_summary_text}"}
             ],
-            temperature=0.7, # Adjusted for a balance of creativity and factuality
-            max_tokens=500  # Allowing for a reasonably sized concise summary
+            temperature=0.7,
+            max_tokens=500
         )
-        concise_summary = response.choices[0].message.content.strip()
-        return concise_summary
-    except Exception as e:
-        st.error(f"Error calling OpenAI API for concise summary: {e}")
-        return None
+        return response.choices[0].message.content.strip()
+
+    return call_with_retries(_call, timeout=timeout, retries=retries)
 
 def load_markdown_content(file_path):
     """Loads content from a markdown file."""
@@ -120,10 +137,10 @@ def extract_json_from_markdown(markdown_content):
         st.warning("No JSON code block found in the schema example markdown. This is okay if the schema is defined programmatically.")
         return None
 
-def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_content, schema_example_content):
+def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_content, schema_example_content, timeout=300, retries=1):
     """Gets ratings and justifications from Gemini using a predefined schema and context.
     Uses the model name 'gemini-2.5-pro-preview-05-06'.
-    """
+    Includes retry and timeout logic."""
     if not api_key:
         st.error("Gemini API Key is not provided for ratings.")
         return None
@@ -236,48 +253,36 @@ def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_co
     6.  Your entire response MUST be a single, valid JSON object that strictly adheres to the schema provided to the API.
     """
 
-    try:
+    def _call():
         generation_config = genai.types.GenerationConfig(
             response_mime_type="application/json",
             response_schema=api_response_schema
         )
-        
+
         st.info("Sending request to Gemini for ratings with schema...")
         response = model.generate_content(
-            prompt, 
+            prompt,
             generation_config=generation_config,
         )
-        
+
         st.success("Received response from Gemini for ratings.")
-        
+
         response_text = ""
         if response.parts:
             first_part = response.parts[0]
             if hasattr(first_part, 'text'):
                 response_text = first_part.text
-            elif hasattr(first_part, 'json_data'): 
-                 return first_part.json_data 
+            elif hasattr(first_part, 'json_data'):
+                return first_part.json_data
         elif hasattr(response, 'text'):
             response_text = response.text
 
         if not response_text:
-             st.error("Gemini API returned an empty response for ratings.")
-             return None
+            raise ValueError("Gemini API returned an empty response for ratings.")
 
         return json.loads(response_text)
 
-    except json.JSONDecodeError as e:
-        st.error(f"Failed to parse JSON response from Gemini: {e}")
-        error_text_to_display = response_text if 'response_text' in locals() and response_text else "No response text available or response object was malformed."
-        if 'response' in locals() and hasattr(response, 'prompt_feedback'):
-            error_text_to_display += f"\nPrompt Feedback: {response.prompt_feedback}"
-        st.text_area("Problematic Gemini Response Text:", error_text_to_display, height=200)
-        return None
-    except Exception as e:
-        st.error(f"Error calling Gemini API for ratings with schema: {e}")
-        if 'response' in locals() and hasattr(response, 'prompt_feedback'):
-            st.error(f"Prompt Feedback: {response.prompt_feedback}")
-        return None
+    return call_with_retries(_call, timeout=timeout, retries=retries)
 
 def parse_ba_scale_to_dict(ba_scale_content):
     """Parses the ba-scale.md content into a dictionary. 
@@ -603,7 +608,12 @@ if uploaded_files:
                     st.write(f"Processing {uploaded_file.name}...")
                     extracted_text = extract_text_from_pdf(uploaded_file)
                     if extracted_text:
-                        detailed_summary = get_gemini_detailed_summary(gemini_api_key, extracted_text) # Store as detailed_summary first
+                        detailed_summary = get_gemini_detailed_summary(
+                            gemini_api_key,
+                            extracted_text,
+                            timeout=processing_timeout,
+                            retries=retry_count,
+                        )
                         if detailed_summary:
                             st.subheader(f"Detailed Summary for {uploaded_file.name}:")
                             st.markdown(detailed_summary)
@@ -620,7 +630,12 @@ if uploaded_files:
                             # Step 10: Get Concise Summary from OpenAI
                             concise_summary = None
                             if openai_api_key: 
-                                concise_summary = get_openai_concise_summary(openai_api_key, detailed_summary) # Pass detailed_summary
+                                concise_summary = get_openai_concise_summary(
+                                    openai_api_key,
+                                    detailed_summary,
+                                    timeout=processing_timeout,
+                                    retries=retry_count,
+                                )
                                 if concise_summary:
                                     st.subheader(f"Concise Summary for {uploaded_file.name}:") # Removed (GPT-4o)
                                     st.markdown(concise_summary)
@@ -634,9 +649,11 @@ if uploaded_files:
                             
                             ratings_justifications = get_gemini_ratings_and_justifications(
                                 gemini_api_key,
-                                current_file_result["summary"], # Use the (potentially concise) summary for ratings context
+                                current_file_result["summary"],  # Use the (potentially concise) summary for ratings context
                                 ba_scale_content,
-                                schema_example_content 
+                                schema_example_content,
+                                timeout=processing_timeout,
+                                retries=retry_count,
                             )
                             if ratings_justifications:
                                 st.subheader(f"Ratings & Justifications (JSON) for {uploaded_file.name}:")
