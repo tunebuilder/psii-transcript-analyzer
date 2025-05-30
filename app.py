@@ -15,6 +15,273 @@ from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT, TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import letter
 
+# --- Constants for Prompts and API ---
+BA_SCALE_CONTENT = '''
+# BEHAVIORAL ACTIVATION QUALITY SCALE¹
+
+## Provider Information
+- **Provider\'s Name:** _______________
+- **Rater\'s Name:** _______________
+- **Trial ID:** _______________
+
+## Session Details
+- **Date of Session:** _______________
+- **Date of Rating:** _______________
+- **Session #:** _______________
+- **Phase #:** _______________
+
+## Rating Method
+- ☐ Audiotape = 1
+- ☐ Live = 2
+- ☐ Transcript = 3
+
+## Supervision Type
+- ☐ Group supervision = 1
+- ☐ Individual supervision = 2
+
+## Rating Source
+- ☐ Self rating = 1
+- ☐ Peer rating = 2
+- ☐ Supervisor rating = 3
+- ☐ Expert rating = 4
+
+## Scoring Legend
+- **0 = Not at all:** skill not performed
+- **1 = Poor:** inappropriate performance with major problems evident; skill delivery is not useful in session
+- **2 = Adequate:** skill performed adequately with some problems and/or inconsistencies
+- **3 = Good:** Skill performed appropriately; minimal problems and/or consistencies; well-timed
+- **4 = Excellent:** Skill is highly developed; helpful to the client even in the face of client difficulties; well-timed and consistently well-performed
+
+---
+
+## Intervention-Specific Skills
+
+### 1. Uses the BA model (usesBAmodel)
+**Description:** Explains the BA model in simple terms and checks that the client understands it. Asks questions such as: What happened? How did you feel? What did you do or not do? Also personalizes the BA model to the client\'s concerns, uses model to guide the selection of specific strategies, and checks that the client understands the BA model.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 2. Establishes and follows agenda (establishesAgenda)
+**Description:** Works collaboratively with the client to plan a specific agenda relatively early in the session, focusing on behavioral activation, and follows the agenda during the session.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 3. Reviews and assigns HW (reviewsHW)
+**Description:** Reviews and makes use of previously assigned homework with the client emphasizing learning and activation and develops one or more tasks for the client to engage in between sessions.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 4. Elicits commitment (elicitsCommitment)
+**Description:** Obtains an agreement with the client to participate in intervention.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 5. Activity calendar and activity plan (Getting active) (activityCalendar)
+**Description:** Uses the activity calendar and discusses mood ratings. Explains the connection between mood and activity. Plans activities that make the client feel good.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 6. Problem-solving (problemSolving)
+**Description:** Introduces all the steps of problem solving: 1) defining the problem, 2) generating solutions and 3) selecting appropriate solutions in collaboration with the client.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 7. Strategies for specific problems (strategiesForSpecificProblems)
+**Description:** Uses strategies like relaxation exercises that will help the client with specific problems.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 8. Manages barriers during the session (managesBarriers)
+**Description:** Deals with any challenges that arise during the session (e.g., lack of privacy and interruptions from spouse or child)
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 9. Involves a significant other (involvesSignificantOther)
+**Description:** Asks if the client wants to involve a significant other and how he/she would like to do that.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 10. Suicide risk assessment (suicideRiskAssessment)
+**Description:** Assesses the degree of suicide risk and takes appropriate action based on the assessment.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+**Total Score:** _______________
+**Mean Score:** Total Number/(10-N/As) = _______________
+
+---
+
+## General Skills
+
+### 1. Rapport-building & self-disclosure (rapportBuilding)
+**Description:** Makes casual informal conversation and shares relatable experiences with the client. Introduces self and role, asks the client to introduce themselves, and elicits their reason for accessing the intervention.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 2. Confidentiality (confidentiality)
+**Description:** Explains confidentiality, discusses limitations of confidentiality (and why these exist), checks client\'s understanding about topics discussed.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 3. Active listening (activeListening)
+**Description:** Listens attentively through non-verbal behavior (eye contact, nodding, open body posture) and verbal behavior (e.g., "mhm").
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 4. Open-ended questions & reflections (openEndedQuestions)
+**Description:** Uses open-ended questions (beyond yes/no responses) and mirrors back the client\'s feelings to convey understanding of what he/she says.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 5. Empathy, warmth, and authenticity (empathy)
+**Description:** Demonstrates accurate understanding, acknowledges client\'s experience, displays warmth, and appears natural and genuine in interactions. Does not try to sound like somebody else or put their needs above those of the client.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 6. Collaborative (collaborative)
+**Description:** Checks in with the client, frequently, about their understanding while planning intervention related activities. Creates opportunities for the client to actively participate in the session.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 7. Validates client\'s experience (validatesExperience)
+**Description:** Shows that he/she understands the client\'s experience and communicates that these experiences make sense within context.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 8. Encouraging (Promoting realistic change for hope) (encouraging)
+**Description:** Encourages the client\'s progress even in the face of obstacles and promotes realistic hope for change.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 9. Elicits affect (elicitsAffect)
+**Description:** Appropriately encourages the client to share feelings, explains that others may share similar feelings in similar situations. Asks the client to reflect on the experience of sharing emotions.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+### 10. Summarizes (summarizes)
+**Description:** Highlights what has been said, shows that they have been listening to the client carefully, and prepares the client to move on.
+
+**Rating:** ☐ 0 Not Done ☐ 1 Poor ☐ 2 Adequate ☐ 3 Good ☐ 4 Excellent ☐ N/A Not Applicable
+
+**Total Score:** _______________
+**Mean Score:** Total Number/(10-N/As) = _______________
+
+---
+
+## Overall Assessment
+
+**Total Mean Score:** _______________ + _______________ = _______________
+(Mean Intervention-specific) + (Mean General) = (Total Score)
+
+### Additional Ratings
+
+**How would you rate the difficulty level of working with this client?**
+☐ 0 Not Difficult ☐ 1 ☐ 2 Moderately Difficult ☐ 3 ☐ 4 Extremely Difficult
+
+**How would you rate the quality of the audiotape?**
+☐ 0 Poor ☐ 1 ☐ 2 Adequate ☐ 3 ☐ 4 Excellent
+
+**Overall, how would you rate the provider?**
+☐ 0 Insufficient ☐ 1 ☐ 2 Adequate ☐ 3 ☐ 4 Excellent
+
+**Total Score:** _______________
+**Mean Score:** Total Number/(3) = _______________
+
+---
+
+## Comments
+*Include red flags, if any:*
+
+_______________________________________________________________________________
+_______________________________________________________________________________
+_______________________________________________________________________________
+
+---
+
+¹ *Adapted from: Singla, D. R., Weobong, B., Nadkarni, A., Chowdhary, N., Shinde, S., Anand, A., Fairburn, C. G., Dimijdan, S., Velleman, R., Weiss, H., & Patel, V. (2014). Improving the scalability of psychological treatments in developing countries: an evaluation of peer-led therapy* 
+'''
+
+SCHEMA_EXAMPLE_CONTENT = '''
+Create a structured output using the Behavioral Activation (BA) quality scale, ensuring that item ratings are nested under two sections: intervention-specific skills and general skills.
+
+Include the following fields for each section:
+- Provider\'s Name
+- Rater\'s Name
+- Trial ID
+- Date of Session
+- Date of Rating
+- Session Number
+- Phase Number
+- Scoring Legend: 0 (Not at all) to 4 (Excellent)
+
+# Steps
+
+1. For each item under the intervention-specific skills, enter the rating based on the criteria provided.
+2. For each item under the general skills, enter the rating based on the criteria provided.
+3. Calculate the total and mean scores for each section separately.
+4. Calculate the total mean score by averaging the mean scores of intervention-specific skills and general skills.
+5. Rate additional aspects such as the difficulty level of working with the client, the quality of the audiotape, and the overall provider quality.
+
+# Output Format
+
+```json
+{
+  "providerName": "Provider\'s Name",
+  "raterName": "Rater\'s Name",
+  "trialId": "Trial ID",
+  "sessionDate": "Date of Session",
+  "ratingDate": "Date of Rating",
+  "sessionNumber": "Session #",
+  "phaseNumber": "Phase #",
+  "interventionSpecificSkills": {
+    "usesBAmodel": "Rating",
+    "establishesAgenda": "Rating",
+    "reviewsHW": "Rating",
+    "elicitsCommitment": "Rating",
+    "activityCalendar": "Rating",
+    "problemSolving": "Rating",
+    "strategiesForSpecificProblems": "Rating",
+    "managesBarriers": "Rating",
+    "involvesSignificantOther": "Rating",
+    "suicideRiskAssessment": "Rating",
+    "totalScore": "Total Score",
+    "meanScore": "Mean Score"
+  },
+  "generalSkills": {
+    "rapportBuilding": "Rating",
+    "confidentiality": "Rating",
+    "activeListening": "Rating",
+    "openEndedQuestions": "Rating",
+    "empathy": "Rating",
+    "collaborative": "Rating",
+    "validatesExperience": "Rating",
+    "encouraging": "Rating",
+    "elicitsAffect": "Rating",
+    "summarizes": "Rating",
+    "totalScore": "Total Score",
+    "meanScore": "Mean Score"
+  },
+  "totalMeanScore": "Total Mean Score",
+  "difficultyLevel": "Rating",
+  "audiotapeQuality": "Rating",
+  "providerOverallRating": "Rating"
+}
+```
+
+# Notes
+
+- Ensure that each rating is based on the specific criteria provided for each skill or aspect.
+- Use \'N/A\' where an item is not applicable.
+- The total scores should reflect the sum of all rated items within their respective skills section.
+- Mean scores are calculated by dividing the total score by the number of applicable items evaluated. 
+'''
+
+# --- Model Names (Global Constants) ---
+GEMINI_DETAILED_SUMMARY_MODEL_NAME = 'gemini-1.5-pro-latest'
+GEMINI_RATINGS_MODEL_NAME = 'gemini-2.5-pro-preview-05-06' # Specified in api-examples.md
+OPENAI_CONCISE_SUMMARY_MODEL_NAME = 'gpt-4o' # As per project plan
+
+# --- Utility Functions ---
 def extract_text_from_pdf(uploaded_file_object):
     """Extracts text from all pages of an uploaded PDF file object,
     performing cleaning to remove problematic characters.
@@ -94,35 +361,10 @@ def get_openai_concise_summary(api_key, detailed_summary_text):
         st.error(f"Error calling OpenAI API for concise summary: {e}")
         return None
 
-def load_markdown_content(file_path):
-    """Loads content from a markdown file."""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return f.read()
-    except FileNotFoundError:
-        st.error(f"Error: {file_path} not found.")
-        return None
-    except Exception as e:
-        st.error(f"Error reading {file_path}: {e}")
-        return None
-
-def extract_json_from_markdown(markdown_content):
-    """Extracts a JSON code block from markdown content."""
-    match = re.search(r"```json\n(.*?)\n```", markdown_content, re.DOTALL)
-    if match:
-        json_string = match.group(1)
-        try:
-            return json.loads(json_string)
-        except json.JSONDecodeError as e:
-            st.error(f"Failed to parse JSON from schema example: {e}")
-            return None
-    else:
-        st.warning("No JSON code block found in the schema example markdown. This is okay if the schema is defined programmatically.")
-        return None
-
-def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_content, schema_example_content):
+def get_gemini_ratings_and_justifications(api_key, detailed_summary):
     """Gets ratings and justifications from Gemini using a predefined schema and context.
     Uses the model name 'gemini-2.5-pro-preview-05-06'.
+    Relies on global BA_SCALE_CONTENT and SCHEMA_EXAMPLE_CONTENT constants.
     """
     if not api_key:
         st.error("Gemini API Key is not provided for ratings.")
@@ -130,14 +372,7 @@ def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_co
     if not detailed_summary:
         st.warning("Detailed summary is not available for ratings.")
         return None
-    if not ba_scale_content:
-        st.error("BA Scale content (ba-scale.md) could not be loaded for ratings context.")
-        return None
-    if not schema_example_content: # This is the content of docs/schema.md, used for prompt context
-        st.error("Schema example (docs/schema.md) could not be loaded for prompt context.")
-        return None
 
-    # Define the actual API response schema programmatically
     api_response_schema = {
         "type": "OBJECT",
         "properties": {
@@ -151,7 +386,7 @@ def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_co
             "interventionSpecificSkills": {
                 "type": "OBJECT",
                 "properties": {
-                    skill: {
+                    **{skill: {
                         "type": "OBJECT",
                         "properties": {
                             "rating": {"type": "STRING"},
@@ -162,19 +397,21 @@ def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_co
                         "usesBAmodel", "establishesAgenda", "reviewsHW", "elicitsCommitment",
                         "activityCalendar", "problemSolving", "strategiesForSpecificProblems",
                         "managesBarriers", "involvesSignificantOther", "suicideRiskAssessment"
-                    ]
+                    ]},
+                    "totalScore": {"type": "STRING"},
+                    "meanScore": {"type": "STRING"}
                 },
                 "required": [
                     "usesBAmodel", "establishesAgenda", "reviewsHW", "elicitsCommitment",
                     "activityCalendar", "problemSolving", "strategiesForSpecificProblems",
                     "managesBarriers", "involvesSignificantOther", "suicideRiskAssessment",
-                    "totalScore", "meanScore" # Still expecting these overall scores
+                    "totalScore", "meanScore"
                 ]
             },
             "generalSkills": {
                 "type": "OBJECT",
                 "properties": {
-                    skill: {
+                     **{skill: {
                         "type": "OBJECT",
                         "properties": {
                             "rating": {"type": "STRING"},
@@ -185,12 +422,15 @@ def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_co
                         "rapportBuilding", "confidentiality", "activeListening", "openEndedQuestions",
                         "empathy", "collaborative", "validatesExperience", "encouraging",
                         "elicitsAffect", "summarizes"
-                    ]
+                    ]},
+                    "totalScore": {"type": "STRING"},
+                    "meanScore": {"type": "STRING"}
                 },
                 "required": [
                     "rapportBuilding", "confidentiality", "activeListening", "openEndedQuestions",
                     "empathy", "collaborative", "validatesExperience", "encouraging",
-                    "elicitsAffect", "summarizes", "totalScore", "meanScore" # Still expecting these overall scores
+                    "elicitsAffect", "summarizes", 
+                    "totalScore", "meanScore"
                 ]
             },
             "totalMeanScore": {"type": "STRING"},
@@ -204,11 +444,6 @@ def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_co
             "totalMeanScore", "difficultyLevel", "audiotapeQuality", "providerOverallRating"
         ]
     }
-    # Add totalScore and meanScore to the properties of interventionSpecificSkills and generalSkills
-    for skill_group in ["interventionSpecificSkills", "generalSkills"]:
-        api_response_schema["properties"][skill_group]["properties"]["totalScore"] = {"type": "STRING"}
-        api_response_schema["properties"][skill_group]["properties"]["meanScore"] = {"type": "STRING"}
-
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.5-pro-preview-05-06')
@@ -220,18 +455,18 @@ def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_co
     {detailed_summary}
 
     BEHAVIORAL ACTIVATION (BA) SCALE DEFINITIONS (includes item names and descriptions):
-    {ba_scale_content}
+    {BA_SCALE_CONTENT}
 
     DESIRED OUTPUT STRUCTURE EXAMPLE (for your understanding, the actual schema is enforced by the API and has specific field names):
-    {schema_example_content}
+    {SCHEMA_EXAMPLE_CONTENT}
 
     INSTRUCTIONS:
     1.  For each skill item (e.g., 'usesBAmodel', 'rapportBuilding') listed in the BA scale definitions, provide two pieces of information:
-        a.  'rating': A string representing the score. The format should be "Number DescriptiveWord" (e.g., "4 Excellent", "3 Good", "2 Adequate", "1 Fair", "0 Poor"). If not applicable, use "N/A". Refer to the BA scale's scoring legend and general best practices for these descriptive words if the scale itself doesn't provide them.
-        b.  'justification': A concise, single-sentence justification for your rating, directly referencing evidence from the DETAILED SUMMARY. If a skill is rated "N/A" or "0 Poor" because it wasn't demonstrated or applicable, state that in the justification.
+        a.  'rating': A string representing the score. The format should be "Number DescriptiveWord" (e.g., "4 Excellent", "3 Good", "2 Adequate", "1 Poor", "0 Not at all"). If not applicable, use "N/A". Refer to the BA scale's scoring legend.
+        b.  'justification': A concise, single-sentence justification for your rating, directly referencing evidence from the DETAILED SUMMARY. If a skill is rated "N/A" or "0 Not at all" because it wasn't demonstrated or applicable, state that in the justification.
     2.  The skill item keys in your JSON output (e.g., "usesBAmodel") MUST EXACTLY MATCH the keys defined in the API schema (which correspond to the camelCase versions of the skills in the BA Scale Definitions).
     3.  Populate all top-level fields like 'providerName', 'raterName', 'trialId', etc. Use "Not Specified" as a string if the information is not present in the summary. For fields like 'ratingDate', 'sessionNumber', try to infer them or use a sensible placeholder like a date or number if appropriate, otherwise use "Not Specified".
-    4.  For 'totalScore' and 'meanScore' within 'interventionSpecificSkills' and 'generalSkills', calculate these based on your ratings for those sections. Ensure these are also strings. If all items in a section are "N/A", the scores can also be "N/A".
+    4.  For 'totalScore' and 'meanScore', these should be direct string properties of the 'interventionSpecificSkills' and 'generalSkills' objects respectively. Calculate these based on your ratings for those sections. Ensure these are also strings. If all items in a section are "N/A", the scores can also be "N/A".
     5.  Format 'audiotapeQuality' and 'providerOverallRating' similarly to skill ratings (e.g., "4 Excellent", "3 Good", "N/A").
     6.  Your entire response MUST be a single, valid JSON object that strictly adheres to the schema provided to the API.
     """
@@ -279,47 +514,46 @@ def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_co
             st.error(f"Prompt Feedback: {response.prompt_feedback}")
         return None
 
-def parse_ba_scale_to_dict(ba_scale_content):
-    """Parses the ba-scale.md content into a dictionary. 
+def parse_ba_scale_to_dict(ba_scale_md_content):
+    """Parses the BA scale markdown content (now from an internal constant) into a dictionary.
     Maps skill_key to {item_name, description}.
     Relies on skill keys being explicitly defined in parentheses in the headings.
     """
     skills_dict = {}
-    if not ba_scale_content:
-        st.error("BA Scale content is empty, cannot parse.")
+    if not ba_scale_md_content:
+        st.error("Internal BA Scale content is empty, cannot parse. This is an application error.")
         return skills_dict
 
-    # Regex to find skill blocks, now capturing the explicit skill_key from parentheses.
-    # Example: ### 1. Uses the BA model (usesBAmodel)
     pattern = re.compile(
-        r"### \d+\. (.*?) \((.*?)\)\n"  # Group 1: Item Name, Group 2: Skill Key
-        r"\s*?"
-        r"\*\*Description:\*\* (.*?)"
-        r"(?=\n\s*\*\*Rating:\*\*)",
+        r"### \\d+\\. (.*?) \\((.*?)\\)\\n"  # Group 1: Item Name, Group 2: Skill Key
+        r"\\s*?"
+        r"\\*\\*Description:\\*\\* (.*?)"
+        r"(?=\\n\\s*\\*\\*Rating:\\*\\*)",
         re.DOTALL
     )
 
-    matches = pattern.findall(ba_scale_content)
+    matches = pattern.findall(ba_scale_md_content)
     for match in matches:
         item_name = match[0].strip()
-        skill_key = match[1].strip() # Explicitly captured skill_key
+        skill_key = match[1].strip()
         description_text = match[2].strip().replace('\n', ' ')
         
-        if skill_key and item_name and description_text:
+        if skill_key and item_name: # Description can be empty but key and name must exist
             skills_dict[skill_key] = {
                 "item_name": item_name,
                 "description": description_text
             }
-        else:
-            # This case should be less likely now with explicit keys
-            st.warning(f"Could not fully parse a skill block. Title: '{item_name}', Captured Key: '{skill_key}'")
+        # else:
+            # Consider if a warning is needed for development/debugging if a block is malformed
+            # st.warning(f"Could not fully parse a skill block from internal BA Scale. Title: '{item_name}', Key: '{skill_key}'")
 
     if not skills_dict:
-        st.warning("Could not parse any skills from ba-scale.md. Ensure skills have explicit (keysInParentheses) in headings.")
-        st.text_area("BA Scale Content for Regex Debug:", ba_scale_content, height=200)
-        st.text_area("Regex Used:", pattern.pattern, height=70)
-    else:
-        st.success(f"Successfully parsed {len(skills_dict)} skills from ba-scale.md.")
+        # This warning is for a failure to parse the *internal* constant, which is an app issue.
+        st.warning("Could not parse any skills from the internal BA Scale definitions. PDF reports may lack detail.")
+        # REMOVE: st.text_area("BA Scale Content for Regex Debug:", ba_scale_md_content, height=200)
+        # REMOVE: st.text_area("Regex Used:", pattern.pattern, height=70)
+    # else:
+        # REMOVE: st.success(f"Successfully parsed {len(skills_dict)} skills from ba-scale.md.")
 
     return skills_dict
 
@@ -584,97 +818,84 @@ if uploaded_files:
             
             results = [] 
 
-            ba_scale_doc_path = "docs/ba-scale.md"
-            schema_doc_path = "docs/schema.md" # This is the EXAMPLE schema for the prompt
-            
-            ba_scale_content = load_markdown_content(ba_scale_doc_path)
-            schema_example_content = load_markdown_content(schema_doc_path)
-
-            # Parse BA scale definitions once
-            ba_scale_dictionary = parse_ba_scale_to_dict(ba_scale_content)
+            # Use the global BA_SCALE_CONTENT for parsing BA scale definitions
+            ba_scale_dictionary = parse_ba_scale_to_dict(BA_SCALE_CONTENT)
             if not ba_scale_dictionary:
-                st.error("Failed to parse ba-scale.md. Critical for table generation. Processing aborted for all files.")
+                st.error("Failed to parse embedded BA Scale content. Critical for table generation. Processing aborted for all files.")
                 # return # or st.stop() if preferred to halt execution
             
-            if not ba_scale_content or not schema_example_content: # ba_scale_content check is somewhat redundant now
-                st.error("Failed to load critical document files (ba-scale.md or schema.md). Processing aborted.")
-            else:
-                for uploaded_file in uploaded_files:
-                    st.write(f"Processing {uploaded_file.name}...")
-                    extracted_text = extract_text_from_pdf(uploaded_file)
-                    if extracted_text:
-                        detailed_summary = get_gemini_detailed_summary(gemini_api_key, extracted_text) # Store as detailed_summary first
-                        if detailed_summary:
-                            st.subheader(f"Detailed Summary for {uploaded_file.name}:")
-                            st.markdown(detailed_summary)
-                            # Initialize with detailed_summary, add other fields as they are generated
-                            current_file_result = {
-                                "file": uploaded_file.name, 
-                                "detailed_summary": detailed_summary, # Store the original detailed summary
-                                "summary": detailed_summary, # This will be replaced by concise if available
-                                "ratings": None, 
-                                "pdf_table_data": None, 
-                                "report_pdf_path": None
-                            }
+            for uploaded_file in uploaded_files:
+                st.write(f"Processing {uploaded_file.name}...")
+                extracted_text = extract_text_from_pdf(uploaded_file)
+                if extracted_text:
+                    detailed_summary = get_gemini_detailed_summary(gemini_api_key, extracted_text)
+                    if detailed_summary:
+                        st.subheader(f"Detailed Summary for {uploaded_file.name}:")
+                        st.markdown(detailed_summary)
+                        current_file_result = {
+                            "file": uploaded_file.name, 
+                            "detailed_summary": detailed_summary,
+                            "summary": detailed_summary, 
+                            "ratings": None, 
+                            "pdf_table_data": None, 
+                            "report_pdf_path": None
+                        }
 
-                            # Step 10: Get Concise Summary from OpenAI
-                            concise_summary = None
-                            if openai_api_key: 
-                                concise_summary = get_openai_concise_summary(openai_api_key, detailed_summary) # Pass detailed_summary
-                                if concise_summary:
-                                    st.subheader(f"Concise Summary for {uploaded_file.name}:") # Removed (GPT-4o)
-                                    st.markdown(concise_summary)
-                                    current_file_result["summary"] = concise_summary # Replace summary with concise one for PDF main body
-                                else:
-                                    st.warning(f"Could not generate concise summary for {uploaded_file.name}. Using detailed summary in main report.")
+                        concise_summary = None
+                        if openai_api_key: 
+                            concise_summary = get_openai_concise_summary(openai_api_key, detailed_summary)
+                            if concise_summary:
+                                st.subheader(f"Concise Summary for {uploaded_file.name}:")
+                                st.markdown(concise_summary)
+                                current_file_result["summary"] = concise_summary
                             else:
-                                st.warning("OpenAI API Key not provided. Skipping concise summary generation. Detailed summary will be used in main report.")
-                            
-                            results.append(current_file_result) 
-                            
-                            ratings_justifications = get_gemini_ratings_and_justifications(
-                                gemini_api_key,
-                                current_file_result["summary"], # Use the (potentially concise) summary for ratings context
-                                ba_scale_content,
-                                schema_example_content 
-                            )
-                            if ratings_justifications:
-                                st.subheader(f"Ratings & Justifications (JSON) for {uploaded_file.name}:")
-                                st.json(ratings_justifications) 
-                                current_file_result["ratings"] = ratings_justifications
-
-                                # Step 11: Assemble table data
-                                if ba_scale_dictionary: # Ensure ba_scale_dictionary was successfully parsed
-                                    pdf_table_data = prepare_data_for_pdf_tables(ratings_justifications, ba_scale_dictionary)
-                                    current_file_result["pdf_table_data"] = pdf_table_data
-                                    st.subheader(f"Prepared Data for PDF Tables (File: {uploaded_file.name})")
-                                    st.json(pdf_table_data) # Displaying for verification
-
-                                    # Step 12: Generate PDF Report
-                                    original_fname_base, _ = os.path.splitext(uploaded_file.name)
-                                    report_path = generate_pdf_report(current_file_result, original_fname_base, include_detailed_summary_appendix) # Pass checkbox state
-                                    if report_path:
-                                        current_file_result["report_pdf_path"] = report_path
-                                        with open(report_path, "rb") as pdf_file:
-                                            st.download_button(
-                                                label=f"Download Report for {uploaded_file.name}",
-                                                data=pdf_file,
-                                                file_name=os.path.basename(report_path),
-                                                mime="application/pdf"
-                                            )
-                                else:
-                                    st.warning(f"Skipping PDF table data preparation for {uploaded_file.name} due to ba-scale.md parsing issues.")
-                            else:
-                                st.warning(f"Could not generate ratings/justifications for {uploaded_file.name}.")
+                                st.warning(f"Could not generate concise summary for {uploaded_file.name}. Using detailed summary in main report.")
                         else:
-                            st.warning(f"Could not generate summary for {uploaded_file.name}.")
+                            st.warning("OpenAI API Key not provided. Skipping concise summary generation. Detailed summary will be used in main report.")
+                        
+                        results.append(current_file_result) 
+                        
+                        ratings_justifications = get_gemini_ratings_and_justifications(
+                            gemini_api_key,
+                            current_file_result["summary"]
+                        )
+                        if ratings_justifications:
+                            st.subheader(f"Ratings & Justifications (JSON) for {uploaded_file.name}:")
+                            st.json(ratings_justifications) 
+                            current_file_result["ratings"] = ratings_justifications
+
+                            # Step 11: Assemble table data
+                            if ba_scale_dictionary: # Ensure ba_scale_dictionary was successfully parsed
+                                pdf_table_data = prepare_data_for_pdf_tables(ratings_justifications, ba_scale_dictionary)
+                                current_file_result["pdf_table_data"] = pdf_table_data
+                                st.subheader(f"Prepared Data for PDF Tables (File: {uploaded_file.name})")
+                                st.json(pdf_table_data) # Displaying for verification
+
+                                # Step 12: Generate PDF Report
+                                original_fname_base, _ = os.path.splitext(uploaded_file.name)
+                                report_path = generate_pdf_report(current_file_result, original_fname_base, include_detailed_summary_appendix) # Pass checkbox state
+                                if report_path:
+                                    current_file_result["report_pdf_path"] = report_path
+                                    with open(report_path, "rb") as pdf_file:
+                                        st.download_button(
+                                            label=f"Download Report for {uploaded_file.name}",
+                                            data=pdf_file,
+                                            file_name=os.path.basename(report_path),
+                                            mime="application/pdf"
+                                        )
+                            else:
+                                st.warning(f"Skipping PDF table data preparation for {uploaded_file.name} due to ba-scale.md parsing issues.")
+                        else:
+                            st.warning(f"Could not generate ratings/justifications for {uploaded_file.name}.")
                     else:
-                        st.warning(f"Could not extract text from {uploaded_file.name}.")
-                
-                if any(r.get("summary") for r in results): # Check if any summary was generated
-                    st.success("Processing complete for all uploaded files!")
+                        st.warning(f"Could not generate summary for {uploaded_file.name}.")
                 else:
-                    st.warning("Processing finished, but no summaries were generated.")
+                    st.warning(f"Could not extract text from {uploaded_file.name}.")
+            
+            if any(r.get("summary") for r in results): # Check if any summary was generated
+                st.success("Processing complete for all uploaded files!")
+            else:
+                st.warning("Processing finished, but no summaries were generated.")
 else:
     st.info("Please upload PDF files to begin.")
 
