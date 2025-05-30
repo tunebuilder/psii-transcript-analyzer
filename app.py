@@ -15,6 +15,26 @@ from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT, TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import letter
 
+
+def call_with_retries(func, *args, timeout=300, retries=1, **kwargs):
+    """Execute a function with a timeout and retry logic."""
+    last_exception = None
+    for attempt in range(retries + 1):
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(func, *args, **kwargs)
+                return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            last_exception = TimeoutError(f"{func.__name__} timed out after {timeout} seconds")
+            if attempt < retries:
+                st.warning(f"{func.__name__} timed out. Retrying ({attempt + 1}/{retries})...")
+        except Exception as e:
+            last_exception = e
+            if attempt < retries:
+                st.warning(f"Error in {func.__name__}: {e}. Retrying ({attempt + 1}/{retries})...")
+    st.error(f"All retries failed for {func.__name__}: {last_exception}")
+    return None
+
 # --- Constants for Prompts and API ---
 BA_SCALE_CONTENT = '''
 # BEHAVIORAL ACTIVATION QUALITY SCALE¹
@@ -314,8 +334,8 @@ def extract_text_from_pdf(uploaded_file_object):
         return None
     return "\n".join(text_parts).strip() if text_parts else None
 
-def get_gemini_detailed_summary(api_key, transcript_text):
-    """Gets a detailed summary from Gemini.
+def get_gemini_detailed_summary(api_key, transcript_text, timeout=300, retries=1):
+    """Gets a detailed summary from Gemini with retry and timeout support.
     Uses the model name 'gemini-2.5-pro-preview-05-06'.
     """
     if not api_key:
@@ -328,15 +348,14 @@ def get_gemini_detailed_summary(api_key, transcript_text):
         "the clinician's performance and any relevant feedback they received from the trainer."
     )
     full_prompt = f"{prompt}\n\nTranscription Text:\n{transcript_text}"
-    try:
+    def _call():
         response = model.generate_content(full_prompt)
         return response.text
-    except Exception as e:
-        st.error(f"Error calling Gemini API for detailed summary: {e}")
-        return None
 
-def get_openai_concise_summary(api_key, detailed_summary_text):
-    """Gets a concise summary from OpenAI's gpt-4o model."""
+    return call_with_retries(_call, timeout=timeout, retries=retries)
+
+def get_openai_concise_summary(api_key, detailed_summary_text, timeout=300, retries=1):
+    """Gets a concise summary from OpenAI's gpt-4o model with retry and timeout support."""
     if not api_key:
         st.error("OpenAI API Key is not provided.")
         return None
@@ -344,7 +363,7 @@ def get_openai_concise_summary(api_key, detailed_summary_text):
         st.warning("Detailed summary (from Gemini) is not available for OpenAI processing.")
         return None
     
-    try:
+    def _call():
         client = openai.OpenAI(api_key=api_key)
         response = client.chat.completions.create(
             model="gpt-4o",
@@ -352,20 +371,153 @@ def get_openai_concise_summary(api_key, detailed_summary_text):
                 {"role": "system", "content": "You are an expert in summarizing clinical session transcripts."},
                 {"role": "user", "content": f"Condense the following detailed summary into a concise overview capturing all of its salient points. The output should be a single paragraph.\n\nDetailed Summary:\n{detailed_summary_text}"}
             ],
-            temperature=0.7, # Adjusted for a balance of creativity and factuality
-            max_tokens=500  # Allowing for a reasonably sized concise summary
+            temperature=0.7,
+            max_tokens=500
         )
-        concise_summary = response.choices[0].message.content.strip()
-        return concise_summary
-    except Exception as e:
-        st.error(f"Error calling OpenAI API for concise summary: {e}")
-        return None
+        return response.choices[0].message.content.strip()
 
-def get_gemini_ratings_and_justifications(api_key, detailed_summary):
+    return call_with_retries(_call, timeout=timeout, retries=retries)
+
+def get_gemini_ratings_and_justifications(api_key, detailed_summary, timeout=300, retries=1):
     """Gets ratings and justifications from Gemini using a predefined schema and context.
     Uses the model name 'gemini-2.5-pro-preview-05-06'.
     Relies on global BA_SCALE_CONTENT and SCHEMA_EXAMPLE_CONTENT constants.
+    Includes retry and timeout logic."""
+    if not api_key:
+        st.error("Gemini API Key is not provided for ratings.")
+        return None
+    if not detailed_summary:
+        st.warning("Detailed summary is not available for ratings.")
+        return None
+
+    api_response_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "providerName": {"type": "STRING"},
+            "raterName": {"type": "STRING"},
+            "trialId": {"type": "STRING"},
+            "sessionDate": {"type": "STRING"},
+            "ratingDate": {"type": "STRING"},
+            "sessionNumber": {"type": "STRING"},
+            "phaseNumber": {"type": "STRING"},
+            "interventionSpecificSkills": {
+                "type": "OBJECT",
+                "properties": {
+                    **{skill: {
+                        "type": "OBJECT",
+                        "properties": {
+                            "rating": {"type": "STRING"},
+                            "justification": {"type": "STRING"}
+                        },
+                        "required": ["rating", "justification"]
+                    } for skill in [
+                        "usesBAmodel", "establishesAgenda", "reviewsHW", "elicitsCommitment",
+                        "activityCalendar", "problemSolving", "strategiesForSpecificProblems",
+                        "managesBarriers", "involvesSignificantOther", "suicideRiskAssessment"
+                    ]},
+                    "totalScore": {"type": "STRING"},
+                    "meanScore": {"type": "STRING"}
+                },
+                "required": [
+                    "usesBAmodel", "establishesAgenda", "reviewsHW", "elicitsCommitment",
+                    "activityCalendar", "problemSolving", "strategiesForSpecificProblems",
+                    "managesBarriers", "involvesSignificantOther", "suicideRiskAssessment",
+                    "totalScore", "meanScore"
+                ]
+            },
+            "generalSkills": {
+                "type": "OBJECT",
+                "properties": {
+                     **{skill: {
+                        "type": "OBJECT",
+                        "properties": {
+                            "rating": {"type": "STRING"},
+                            "justification": {"type": "STRING"}
+                        },
+                        "required": ["rating", "justification"]
+                    } for skill in [
+                        "rapportBuilding", "confidentiality", "activeListening", "openEndedQuestions",
+                        "empathy", "collaborative", "validatesExperience", "encouraging",
+                        "elicitsAffect", "summarizes"
+                    ]},
+                    "totalScore": {"type": "STRING"},
+                    "meanScore": {"type": "STRING"}
+                },
+                "required": [
+                    "rapportBuilding", "confidentiality", "activeListening", "openEndedQuestions",
+                    "empathy", "collaborative", "validatesExperience", "encouraging",
+                    "elicitsAffect", "summarizes",
+                    "totalScore", "meanScore"
+                ]
+            },
+            "totalMeanScore": {"type": "STRING"},
+            "difficultyLevel": {"type": "STRING"},
+            "audiotapeQuality": {"type": "STRING"},
+            "providerOverallRating": {"type": "STRING"}
+        },
+        "required": [
+            "providerName", "raterName", "trialId", "sessionDate", "ratingDate",
+            "sessionNumber", "phaseNumber", "interventionSpecificSkills", "generalSkills",
+            "totalMeanScore", "difficultyLevel", "audiotapeQuality", "providerOverallRating"
+        ]
+    }
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.5-pro-preview-05-06')
+
+    prompt = f"""
+    You are an expert in evaluating clinical skills based on transcripts. Please analyze the provided detailed summary of a therapy session and the Behavioral Activation (BA) scale definitions. Your goal is to fill out a structured JSON report according to the schema I will provide to the API.
+
+    DETAILED SUMMARY:
+    {detailed_summary}
+
+    BEHAVIORAL ACTIVATION (BA) SCALE DEFINITIONS (includes item names and descriptions):
+    {BA_SCALE_CONTENT}
+
+    DESIRED OUTPUT STRUCTURE EXAMPLE (for your understanding, the actual schema is enforced by the API and has specific field names):
+    {SCHEMA_EXAMPLE_CONTENT}
+
+    INSTRUCTIONS:
+    1.  For each skill item (e.g., 'usesBAmodel', 'rapportBuilding') listed in the BA scale definitions, provide two pieces of information:
+        a.  'rating': A string representing the score. The format should be "Number DescriptiveWord" (e.g., "4 Excellent", "3 Good", "2 Adequate", "1 Poor", "0 Not at all"). If not applicable, use "N/A". Refer to the BA scale's scoring legend.
+        b.  'justification': A concise, single-sentence justification for your rating, directly referencing evidence from the DETAILED SUMMARY. If a skill is rated "N/A" or "0 Not at all" because it wasn't demonstrated or applicable, state that in the justification.
+    2.  The skill item keys in your JSON output (e.g., "usesBAmodel") MUST EXACTLY MATCH the keys defined in the API schema (which correspond to the camelCase versions of the skills in the BA Scale Definitions).
+    3.  Populate all top-level fields like 'providerName', 'raterName', 'trialId', etc. Use "Not Specified" as a string if the information is not present in the summary. For fields like 'ratingDate', 'sessionNumber', try to infer them or use a sensible placeholder like a date or number if appropriate, otherwise use "Not Specified".
+    4.  For 'totalScore' and 'meanScore', these should be direct string properties of the 'interventionSpecificSkills' and 'generalSkills' objects respectively. Calculate these based on your ratings for those sections. Ensure these are also strings. If all items in a section are "N/A", the scores can also be "N/A".
+    5.  Format 'audiotapeQuality' and 'providerOverallRating' similarly to skill ratings (e.g., "4 Excellent", "3 Good", "N/A").
+    6.  Your entire response MUST be a single, valid JSON object that strictly adheres to the schema provided to the API.
     """
+
+    def _call():
+        generation_config = genai.types.GenerationConfig(
+            response_mime_type="application/json",
+            response_schema=api_response_schema
+        )
+
+        st.info("Sending request to Gemini for ratings with schema...")
+        response = model.generate_content(
+            prompt,
+            generation_config=generation_config,
+        )
+
+        st.success("Received response from Gemini for ratings.")
+
+        response_text = ""
+        if response.parts:
+            first_part = response.parts[0]
+            if hasattr(first_part, 'text'):
+                response_text = first_part.text
+            elif hasattr(first_part, 'json_data'):
+                return first_part.json_data
+        elif hasattr(response, 'text'):
+            response_text = response.text
+
+        if not response_text:
+            raise ValueError("Gemini API returned an empty response for ratings.")
+
+        return json.loads(response_text)
+
+    return call_with_retries(_call, timeout=timeout, retries=retries)
     if not api_key:
         st.error("Gemini API Key is not provided for ratings.")
         return None
@@ -471,48 +623,36 @@ def get_gemini_ratings_and_justifications(api_key, detailed_summary):
     6.  Your entire response MUST be a single, valid JSON object that strictly adheres to the schema provided to the API.
     """
 
-    try:
+    def _call():
         generation_config = genai.types.GenerationConfig(
             response_mime_type="application/json",
             response_schema=api_response_schema
         )
-        
+
         st.info("Sending request to Gemini for ratings with schema...")
         response = model.generate_content(
-            prompt, 
+            prompt,
             generation_config=generation_config,
         )
-        
+
         st.success("Received response from Gemini for ratings.")
-        
+
         response_text = ""
         if response.parts:
             first_part = response.parts[0]
             if hasattr(first_part, 'text'):
                 response_text = first_part.text
-            elif hasattr(first_part, 'json_data'): 
-                 return first_part.json_data 
+            elif hasattr(first_part, 'json_data'):
+                return first_part.json_data
         elif hasattr(response, 'text'):
             response_text = response.text
 
         if not response_text:
-             st.error("Gemini API returned an empty response for ratings.")
-             return None
+            raise ValueError("Gemini API returned an empty response for ratings.")
 
         return json.loads(response_text)
 
-    except json.JSONDecodeError as e:
-        st.error(f"Failed to parse JSON response from Gemini: {e}")
-        error_text_to_display = response_text if 'response_text' in locals() and response_text else "No response text available or response object was malformed."
-        if 'response' in locals() and hasattr(response, 'prompt_feedback'):
-            error_text_to_display += f"\nPrompt Feedback: {response.prompt_feedback}"
-        st.text_area("Problematic Gemini Response Text:", error_text_to_display, height=200)
-        return None
-    except Exception as e:
-        st.error(f"Error calling Gemini API for ratings with schema: {e}")
-        if 'response' in locals() and hasattr(response, 'prompt_feedback'):
-            st.error(f"Prompt Feedback: {response.prompt_feedback}")
-        return None
+    return call_with_retries(_call, timeout=timeout, retries=retries)
 
 def parse_ba_scale_to_dict(ba_scale_md_content):
     """Parses the BA scale markdown content (now from an internal constant) into a dictionary.
@@ -828,22 +968,32 @@ if uploaded_files:
                 st.write(f"Processing {uploaded_file.name}...")
                 extracted_text = extract_text_from_pdf(uploaded_file)
                 if extracted_text:
-                    detailed_summary = get_gemini_detailed_summary(gemini_api_key, extracted_text)
+                    detailed_summary = get_gemini_detailed_summary(
+                        gemini_api_key,
+                        extracted_text,
+                        timeout=processing_timeout,
+                        retries=retry_count,
+                    )
                     if detailed_summary:
                         st.subheader(f"Detailed Summary for {uploaded_file.name}:")
                         st.markdown(detailed_summary)
                         current_file_result = {
-                            "file": uploaded_file.name, 
+                            "file": uploaded_file.name,
                             "detailed_summary": detailed_summary,
-                            "summary": detailed_summary, 
-                            "ratings": None, 
-                            "pdf_table_data": None, 
+                            "summary": detailed_summary,
+                            "ratings": None,
+                            "pdf_table_data": None,
                             "report_pdf_path": None
                         }
 
                         concise_summary = None
-                        if openai_api_key: 
-                            concise_summary = get_openai_concise_summary(openai_api_key, detailed_summary)
+                        if openai_api_key:
+                            concise_summary = get_openai_concise_summary(
+                                openai_api_key,
+                                detailed_summary,
+                                timeout=processing_timeout,
+                                retries=retry_count,
+                            )
                             if concise_summary:
                                 st.subheader(f"Concise Summary for {uploaded_file.name}:")
                                 st.markdown(concise_summary)
@@ -852,28 +1002,29 @@ if uploaded_files:
                                 st.warning(f"Could not generate concise summary for {uploaded_file.name}. Using detailed summary in main report.")
                         else:
                             st.warning("OpenAI API Key not provided. Skipping concise summary generation. Detailed summary will be used in main report.")
-                        
-                        results.append(current_file_result) 
-                        
+
+                        results.append(current_file_result)
+
                         ratings_justifications = get_gemini_ratings_and_justifications(
                             gemini_api_key,
-                            current_file_result["summary"]
+                            current_file_result["summary"],
+                            timeout=processing_timeout,
+                            retries=retry_count,
                         )
                         if ratings_justifications:
                             st.subheader(f"Ratings & Justifications (JSON) for {uploaded_file.name}:")
-                            st.json(ratings_justifications) 
+                            st.json(ratings_justifications)
                             current_file_result["ratings"] = ratings_justifications
 
-                            # Step 11: Assemble table data
-                            if ba_scale_dictionary: # Ensure ba_scale_dictionary was successfully parsed
+                            if ba_scale_dictionary:  # Ensure ba_scale_dictionary was successfully parsed
                                 pdf_table_data = prepare_data_for_pdf_tables(ratings_justifications, ba_scale_dictionary)
                                 current_file_result["pdf_table_data"] = pdf_table_data
                                 st.subheader(f"Prepared Data for PDF Tables (File: {uploaded_file.name})")
-                                st.json(pdf_table_data) # Displaying for verification
+                                st.json(pdf_table_data)
 
                                 # Step 12: Generate PDF Report
                                 original_fname_base, _ = os.path.splitext(uploaded_file.name)
-                                report_path = generate_pdf_report(current_file_result, original_fname_base, include_detailed_summary_appendix) # Pass checkbox state
+                                report_path = generate_pdf_report(current_file_result, original_fname_base, include_detailed_summary_appendix)
                                 if report_path:
                                     current_file_result["report_pdf_path"] = report_path
                                     with open(report_path, "rb") as pdf_file:
@@ -881,7 +1032,7 @@ if uploaded_files:
                                             label=f"Download Report for {uploaded_file.name}",
                                             data=pdf_file,
                                             file_name=os.path.basename(report_path),
-                                            mime="application/pdf"
+                                            mime="application/pdf",
                                         )
                             else:
                                 st.warning(f"Skipping PDF table data preparation for {uploaded_file.name} due to ba-scale.md parsing issues.")
@@ -891,11 +1042,10 @@ if uploaded_files:
                         st.warning(f"Could not generate summary for {uploaded_file.name}.")
                 else:
                     st.warning(f"Could not extract text from {uploaded_file.name}.")
-            
-            if any(r.get("summary") for r in results): # Check if any summary was generated
+
+            if any(r.get("summary") for r in results):  # Check if any summary was generated
                 st.success("Processing complete for all uploaded files!")
             else:
-                st.warning("Processing finished, but no summaries were generated.")
 else:
     st.info("Please upload PDF files to begin.")
 
