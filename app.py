@@ -7,6 +7,7 @@ import openai
 import json
 import re
 import os
+import time # Added for retry delay
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -14,6 +15,30 @@ from reportlab.lib import colors
 from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT, TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import letter
+
+# Moved UI update function to the top
+def update_progress_ui(progress_bar, status_placeholder, file_statuses, total_files):
+    processed_count = 0
+    for filename, statuses in file_statuses.items():
+        if statuses.get("pdf_report_status") == "Complete" or \
+           statuses.get("pdf_report_status") == "Error" or \
+           statuses.get("pdf_report_status") == "Skipped":
+            processed_count += 1
+
+    progress_value = 0
+    if total_files > 0:
+        progress_value = processed_count / total_files
+    progress_bar.progress(progress_value)
+    
+    status_texts = []
+    for filename, statuses in file_statuses.items():
+        text = f"<b>{filename}:</b> "
+        text += f"Summary: {statuses.get('detailed_summary_status', 'Pending')}, "
+        text += f"Ratings: {statuses.get('ratings_status', 'Pending')}, "
+        text += f"Concise: {statuses.get('concise_summary_status', 'Pending')}, "
+        text += f"Report: {statuses.get('pdf_report_status', 'Pending')}"
+        status_texts.append(text)
+    status_placeholder.markdown("\n".join(status_texts), unsafe_allow_html=True)
 
 def extract_text_from_pdf(uploaded_file_object):
     """Extracts text from all pages of an uploaded PDF file object,
@@ -47,9 +72,10 @@ def extract_text_from_pdf(uploaded_file_object):
         return None
     return "\n".join(text_parts).strip() if text_parts else None
 
-def get_gemini_detailed_summary(api_key, transcript_text):
+def get_gemini_detailed_summary(api_key, transcript_text, timeout, retries):
     """Gets a detailed summary from Gemini.
     Uses the model name 'gemini-2.5-pro-preview-05-06'.
+    Includes timeout and retry logic.
     """
     if not api_key:
         st.error("Gemini API Key is not provided.")
@@ -61,15 +87,29 @@ def get_gemini_detailed_summary(api_key, transcript_text):
         "the clinician's performance and any relevant feedback they received from the trainer."
     )
     full_prompt = f"{prompt}\n\nTranscription Text:\n{transcript_text}"
-    try:
-        response = model.generate_content(full_prompt)
-        return response.text
-    except Exception as e:
-        st.error(f"Error calling Gemini API for detailed summary: {e}")
-        return None
+    
+    for attempt in range(retries + 1):
+        try:
+            response = model.generate_content(
+                full_prompt,
+                request_options={
+                    "timeout": timeout
+                }
+            )
+            return response.text
+        except Exception as e:
+            st.warning(f"Gemini API (summary) attempt {attempt + 1} of {retries + 1} failed: {e}")
+            if attempt < retries:
+                time.sleep(1)  # Wait 1 second before retrying
+            else:
+                st.error(f"Gemini API (summary) failed after {retries + 1} attempts: {e}")
+                return None
+    return None # Should be unreachable if logic is correct
 
-def get_openai_concise_summary(api_key, detailed_summary_text):
-    """Gets a concise summary from OpenAI's gpt-4o model."""
+def get_openai_concise_summary(api_key, detailed_summary_text, timeout, retries):
+    """Gets a concise summary from OpenAI's gpt-4o model.
+    Includes timeout and retry logic.
+    """
     if not api_key:
         st.error("OpenAI API Key is not provided.")
         return None
@@ -77,22 +117,29 @@ def get_openai_concise_summary(api_key, detailed_summary_text):
         st.warning("Detailed summary (from Gemini) is not available for OpenAI processing.")
         return None
     
-    try:
-        client = openai.OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are an expert in summarizing clinical session transcripts."},
-                {"role": "user", "content": f"Condense the following detailed summary into a concise overview capturing all of its salient points. The output should be a single paragraph.\n\nDetailed Summary:\n{detailed_summary_text}"}
-            ],
-            temperature=0.7, # Adjusted for a balance of creativity and factuality
-            max_tokens=500  # Allowing for a reasonably sized concise summary
-        )
-        concise_summary = response.choices[0].message.content.strip()
-        return concise_summary
-    except Exception as e:
-        st.error(f"Error calling OpenAI API for concise summary: {e}")
-        return None
+    client = openai.OpenAI(api_key=api_key)
+    for attempt in range(retries + 1):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "You are an expert in summarizing clinical session transcripts."},
+                    {"role": "user", "content": f"Condense the following detailed summary into a concise overview capturing all of its salient points. The output should be a single paragraph.\n\nDetailed Summary:\n{detailed_summary_text}"}
+                ],
+                temperature=0.7,
+                max_tokens=500,
+                timeout=timeout
+            )
+            concise_summary = response.choices[0].message.content.strip()
+            return concise_summary
+        except Exception as e:
+            st.warning(f"OpenAI API (concise summary) attempt {attempt + 1} of {retries + 1} failed: {e}")
+            if attempt < retries:
+                time.sleep(1)  # Wait 1 second before retrying
+            else:
+                st.error(f"OpenAI API (concise summary) failed after {retries + 1} attempts: {e}")
+                return None
+    return None # Should be unreachable
 
 def load_markdown_content(file_path):
     """Loads content from a markdown file."""
@@ -120,15 +167,16 @@ def extract_json_from_markdown(markdown_content):
         st.warning("No JSON code block found in the schema example markdown. This is okay if the schema is defined programmatically.")
         return None
 
-def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_content, schema_example_content):
+def get_gemini_ratings_and_justifications(api_key, transcript_text, ba_scale_content, schema_example_content, timeout, retries):
     """Gets ratings and justifications from Gemini using a predefined schema and context.
     Uses the model name 'gemini-2.5-pro-preview-05-06'.
+    Includes timeout and retry logic.
     """
     if not api_key:
         st.error("Gemini API Key is not provided for ratings.")
         return None
-    if not detailed_summary:
-        st.warning("Detailed summary is not available for ratings.")
+    if not transcript_text:
+        st.warning("Transcript text is not available for ratings.")
         return None
     if not ba_scale_content:
         st.error("BA Scale content (ba-scale.md) could not be loaded for ratings context.")
@@ -151,7 +199,7 @@ def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_co
             "interventionSpecificSkills": {
                 "type": "OBJECT",
                 "properties": {
-                    skill: {
+                    **{skill: {
                         "type": "OBJECT",
                         "properties": {
                             "rating": {"type": "STRING"},
@@ -162,19 +210,21 @@ def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_co
                         "usesBAmodel", "establishesAgenda", "reviewsHW", "elicitsCommitment",
                         "activityCalendar", "problemSolving", "strategiesForSpecificProblems",
                         "managesBarriers", "involvesSignificantOther", "suicideRiskAssessment"
-                    ]
+                    ]},
+                    "totalScore": {"type": "STRING"},  # Definition for nested totalScore
+                    "meanScore": {"type": "STRING"}   # Definition for nested meanScore
                 },
                 "required": [
                     "usesBAmodel", "establishesAgenda", "reviewsHW", "elicitsCommitment",
                     "activityCalendar", "problemSolving", "strategiesForSpecificProblems",
                     "managesBarriers", "involvesSignificantOther", "suicideRiskAssessment",
-                    "totalScore", "meanScore" # Still expecting these overall scores
+                    "totalScore", "meanScore" 
                 ]
             },
             "generalSkills": {
                 "type": "OBJECT",
                 "properties": {
-                    skill: {
+                    **{skill: {
                         "type": "OBJECT",
                         "properties": {
                             "rating": {"type": "STRING"},
@@ -185,99 +235,110 @@ def get_gemini_ratings_and_justifications(api_key, detailed_summary, ba_scale_co
                         "rapportBuilding", "confidentiality", "activeListening", "openEndedQuestions",
                         "empathy", "collaborative", "validatesExperience", "encouraging",
                         "elicitsAffect", "summarizes"
-                    ]
+                    ]},
+                    "totalScore": {"type": "STRING"},  # Definition for nested totalScore
+                    "meanScore": {"type": "STRING"}   # Definition for nested meanScore
                 },
                 "required": [
                     "rapportBuilding", "confidentiality", "activeListening", "openEndedQuestions",
                     "empathy", "collaborative", "validatesExperience", "encouraging",
-                    "elicitsAffect", "summarizes", "totalScore", "meanScore" # Still expecting these overall scores
+                    "elicitsAffect", "summarizes", "totalScore", "meanScore"
                 ]
             },
+             # Adding totalScore and meanScore for interventionSpecificSkills and generalSkills here
+            "interventionSpecificSkills_totalScore": {"type": "STRING"},
+            "interventionSpecificSkills_meanScore": {"type": "STRING"},
+            "generalSkills_totalScore": {"type": "STRING"},
+            "generalSkills_meanScore": {"type": "STRING"},
             "totalMeanScore": {"type": "STRING"},
             "difficultyLevel": {"type": "STRING"},
             "audiotapeQuality": {"type": "STRING"},
             "providerOverallRating": {"type": "STRING"}
         },
         "required": [
-            "providerName", "raterName", "trialId", "sessionDate", "ratingDate", 
-            "sessionNumber", "phaseNumber", "interventionSpecificSkills", "generalSkills", 
+            "providerName", "raterName", "trialId", "sessionDate", "ratingDate",
+            "sessionNumber", "phaseNumber", "interventionSpecificSkills", "generalSkills",
+            "interventionSpecificSkills_totalScore", "interventionSpecificSkills_meanScore", # ensure these are required
+            "generalSkills_totalScore", "generalSkills_meanScore", # ensure these are required
             "totalMeanScore", "difficultyLevel", "audiotapeQuality", "providerOverallRating"
         ]
     }
-    # Add totalScore and meanScore to the properties of interventionSpecificSkills and generalSkills
-    for skill_group in ["interventionSpecificSkills", "generalSkills"]:
-        api_response_schema["properties"][skill_group]["properties"]["totalScore"] = {"type": "STRING"}
-        api_response_schema["properties"][skill_group]["properties"]["meanScore"] = {"type": "STRING"}
 
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-pro-preview-05-06')
-
-    prompt = f"""
-    You are an expert in evaluating clinical skills based on transcripts. Please analyze the provided detailed summary of a therapy session and the Behavioral Activation (BA) scale definitions. Your goal is to fill out a structured JSON report according to the schema I will provide to the API.
-
-    DETAILED SUMMARY:
-    {detailed_summary}
-
-    BEHAVIORAL ACTIVATION (BA) SCALE DEFINITIONS (includes item names and descriptions):
-    {ba_scale_content}
-
-    DESIRED OUTPUT STRUCTURE EXAMPLE (for your understanding, the actual schema is enforced by the API and has specific field names):
-    {schema_example_content}
-
-    INSTRUCTIONS:
-    1.  For each skill item (e.g., 'usesBAmodel', 'rapportBuilding') listed in the BA scale definitions, provide two pieces of information:
-        a.  'rating': A string representing the score. The format should be "Number DescriptiveWord" (e.g., "4 Excellent", "3 Good", "2 Adequate", "1 Fair", "0 Poor"). If not applicable, use "N/A". Refer to the BA scale's scoring legend and general best practices for these descriptive words if the scale itself doesn't provide them.
-        b.  'justification': A concise, single-sentence justification for your rating, directly referencing evidence from the DETAILED SUMMARY. If a skill is rated "N/A" or "0 Poor" because it wasn't demonstrated or applicable, state that in the justification.
-    2.  The skill item keys in your JSON output (e.g., "usesBAmodel") MUST EXACTLY MATCH the keys defined in the API schema (which correspond to the camelCase versions of the skills in the BA Scale Definitions).
-    3.  Populate all top-level fields like 'providerName', 'raterName', 'trialId', etc. Use "Not Specified" as a string if the information is not present in the summary. For fields like 'ratingDate', 'sessionNumber', try to infer them or use a sensible placeholder like a date or number if appropriate, otherwise use "Not Specified".
-    4.  For 'totalScore' and 'meanScore' within 'interventionSpecificSkills' and 'generalSkills', calculate these based on your ratings for those sections. Ensure these are also strings. If all items in a section are "N/A", the scores can also be "N/A".
-    5.  Format 'audiotapeQuality' and 'providerOverallRating' similarly to skill ratings (e.g., "4 Excellent", "3 Good", "N/A").
-    6.  Your entire response MUST be a single, valid JSON object that strictly adheres to the schema provided to the API.
-    """
-
-    try:
-        generation_config = genai.types.GenerationConfig(
+    model = genai.GenerativeModel(
+        'gemini-2.5-pro-preview-05-06',
+        generation_config=genai.types.GenerationConfig(
             response_mime_type="application/json",
             response_schema=api_response_schema
         )
-        
-        st.info("Sending request to Gemini for ratings with schema...")
-        response = model.generate_content(
-            prompt, 
-            generation_config=generation_config,
-        )
-        
-        st.success("Received response from Gemini for ratings.")
-        
-        response_text = ""
-        if response.parts:
-            first_part = response.parts[0]
-            if hasattr(first_part, 'text'):
-                response_text = first_part.text
-            elif hasattr(first_part, 'json_data'): 
-                 return first_part.json_data 
-        elif hasattr(response, 'text'):
-            response_text = response.text
+    )
 
-        if not response_text:
-             st.error("Gemini API returned an empty response for ratings.")
-             return None
+    prompt = (
+        "You are an expert rater evaluating a therapy session transcript based on the Behavior Activation (BA) Scale. "
+        "Your task is to provide a rating (0-6, or N/A) and a concise justification for each skill listed in the BA scale. "
+        "The justification should be specific to the provided transcript text and directly support the given rating. "
+        "Refer to the BA Scale definitions provided below for guidance on each rating. "
+        "Output your response strictly according to the provided JSON schema. "
+        "Ensure all string fields in the JSON are properly escaped. "
+        "Do not add any extra commentary or text outside of the JSON structure. "
+        "The ratings should be based on the *entire transcript text*, not just a summary of it. "
+        "For 'totalScore' and 'meanScore' under 'interventionSpecificSkills' and 'generalSkills' in the schema, calculate these based on your ratings for the skills in those respective sections. Ensure these are strings. If all items in a section are 'N/A', the scores can also be 'N/A'."
+    )
 
-        return json.loads(response_text)
+    full_prompt = (
+        f"{prompt}\n\n"
+        f"TRANSCRIPT TEXT:\n{transcript_text}\n\n"
+        f"BA SCALE DEFINITIONS:\n{ba_scale_content}\n\n"
+        f"EXAMPLE JSON OUTPUT STRUCTURE (use this as a guide for the fields, but fill with actual ratings and justifications from the transcript. Note that the schema includes totalScore and meanScore fields directly under interventionSpecificSkills and generalSkills that you must calculate and populate, distinct from the skill-specific ratings and justifications.):\n{schema_example_content}"
+    )
+    
+    for attempt in range(retries + 1):
+        try:
+            st.info(f"Sending request to Gemini for ratings (attempt {attempt + 1}/{retries + 1})...")
+            response = model.generate_content(
+                full_prompt,
+                request_options={
+                    "timeout": timeout
+                }
+            )
+        
+            if not response.parts:
+                st.error("Gemini API returned no parts in the response for ratings.")
+                if hasattr(response, 'prompt_feedback'):
+                    st.error(f"Prompt Feedback: {response.prompt_feedback}")
+                return None
 
-    except json.JSONDecodeError as e:
-        st.error(f"Failed to parse JSON response from Gemini: {e}")
-        error_text_to_display = response_text if 'response_text' in locals() and response_text else "No response text available or response object was malformed."
-        if 'response' in locals() and hasattr(response, 'prompt_feedback'):
-            error_text_to_display += f"\nPrompt Feedback: {response.prompt_feedback}"
-        st.text_area("Problematic Gemini Response Text:", error_text_to_display, height=200)
-        return None
-    except Exception as e:
-        st.error(f"Error calling Gemini API for ratings with schema: {e}")
-        if 'response' in locals() and hasattr(response, 'prompt_feedback'):
-            st.error(f"Prompt Feedback: {response.prompt_feedback}")
-        return None
+            json_response_text = response.text # This should be the JSON string
+
+            try:
+                parsed_json = json.loads(json_response_text)
+                return parsed_json
+            except json.JSONDecodeError as e:
+                st.error(f"Failed to parse JSON response from Gemini: {e}")
+                st.text_area("Problematic JSON Response from Gemini for Ratings:", value=json_response_text, height=300)
+                if hasattr(response, 'prompt_feedback'):
+                    st.error(f"Prompt Feedback: {response.prompt_feedback}")
+                return None
+            except Exception as e_gen: # Catch any other general errors during parsing or access
+                 st.error(f"General error processing Gemini response for ratings: {e_gen}")
+                 st.text_area("Problematic Full Response Object from Gemini:", value=str(response), height=300)
+                 return None
+
+        except Exception as e:
+            st.warning(f"Gemini API (ratings) attempt {attempt + 1} of {retries + 1} failed: {e}")
+            # Log more details if available from the exception
+            if hasattr(e, 'response') and hasattr(e.response, 'prompt_feedback'):
+                st.warning(f"Prompt Feedback: {e.response.prompt_feedback}")
+            elif hasattr(e, 'args') and len(e.args) > 0:
+                 st.warning(f"Error details: {e.args[0]}")
+            
+            if attempt < retries:
+                time.sleep(1)  # Wait 1 second before retrying
+            else:
+                st.error(f"Gemini API (ratings) failed after {retries + 1} attempts: {e}")
+                return None
+    return None # Should be unreachable
 
 def parse_ba_scale_to_dict(ba_scale_content):
     """Parses the ba-scale.md content into a dictionary. 
@@ -459,6 +520,12 @@ def generate_pdf_report(file_data, original_filename_base, include_appendix):
     metadata_style = ParagraphStyle('Metadata', parent=styles['Normal'], spaceAfter=0.05*inch, leading=14, fontSize=10)
     score_style = ParagraphStyle('Score', parent=styles['Normal'], spaceBefore=0.1*inch, leading=14, fontSize=10, fontWeight='Bold')
 
+    # Define styles for appendix
+    appendix_body_style = ParagraphStyle('AppendixBody', parent=body_style)
+    appendix_body_style.spaceBefore = 2 # Tighter spacing for appendix
+    appendix_body_style.spaceAfter = 2
+    appendix_list_item_style = ParagraphStyle('AppendixListItem', parent=appendix_body_style, leftIndent=0.25*inch)
+
     # Report Title
     story.append(Paragraph(f"Behavioral Activation Adherence Report: {original_filename_base}", title_style))
     story.append(Spacer(1, 0.1*inch))
@@ -530,16 +597,42 @@ def generate_pdf_report(file_data, original_filename_base, include_appendix):
     # Conditionally add Detailed Summary Appendix
     if include_appendix:
         detailed_summary_text = file_data.get("detailed_summary", "Detailed summary not available for appendix.")
-        if detailed_summary_text != "Detailed summary not available for appendix.": # Check if it's the actual summary
+        # Check if detailed_summary_text is not None and not the placeholder string, and also not empty after strip
+        if detailed_summary_text and detailed_summary_text.strip() and detailed_summary_text != "Detailed summary not available for appendix.":
             story.append(PageBreak())
-            story.append(Paragraph("Appendix: Detailed Session Summary", title_style)) # Re-use title_style or a specific appendix_title_style
+            story.append(Paragraph("Appendix: Detailed Session Summary", title_style))
             story.append(Spacer(1, 0.1*inch))
-            # Split detailed summary into paragraphs to handle long text better
-            detailed_summary_paragraphs = detailed_summary_text.split('\n')
-            for para_text in detailed_summary_paragraphs:
-                if para_text.strip(): # Add non-empty paragraphs
-                    story.append(Paragraph(para_text, body_style))
-                    story.append(Spacer(1, 0.05*inch)) # Small spacer between paragraphs
+            
+            summary_lines = detailed_summary_text.split('\n')
+            for line_text in summary_lines:
+                current_content = line_text.strip()
+
+                if not current_content:
+                    leading_for_spacer = appendix_body_style.leading if hasattr(appendix_body_style, 'leading') and appendix_body_style.leading is not None else 12
+                    story.append(Spacer(1, leading_for_spacer))
+                    continue
+
+                # Apply bold conversion first
+                current_content = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', current_content)
+
+                current_style_to_use = appendix_body_style
+                
+                # Check for unordered list items: * item or - item
+                ul_match = re.match(r'^([\*\-])\s+(.*)', current_content)
+                if ul_match:
+                    content_after_marker = ul_match.group(2)
+                    current_content = f"• {content_after_marker}"
+                    current_style_to_use = appendix_list_item_style
+                else:
+                    # Check for ordered list items: 1. item
+                    ol_match = re.match(r'^(\d+\.)\s+(.*)', current_content)
+                    if ol_match:
+                        number_marker = ol_match.group(1)
+                        content_after_marker = ol_match.group(2)
+                        current_content = f"{number_marker} {content_after_marker}" # Keep original numbering
+                        current_style_to_use = appendix_list_item_style
+                
+                story.append(Paragraph(current_content, current_style_to_use))
     
     try:
         doc.build(story)
@@ -583,6 +676,10 @@ if uploaded_files:
             st.info("Processing started...")
             
             results = [] 
+            st.session_state.file_statuses = {} # Initialize file_statuses for UI
+            num_files = len(uploaded_files)
+            progress_bar = st.progress(0) # Initialize progress bar
+            status_placeholder = st.empty() # Placeholder for detailed statuses
 
             ba_scale_doc_path = "docs/ba-scale.md"
             schema_doc_path = "docs/schema.md" # This is the EXAMPLE schema for the prompt
@@ -600,78 +697,154 @@ if uploaded_files:
                 st.error("Failed to load critical document files (ba-scale.md or schema.md). Processing aborted.")
             else:
                 for uploaded_file in uploaded_files:
-                    st.write(f"Processing {uploaded_file.name}...")
+                    filename = uploaded_file.name
+                    st.write(f"Processing {filename}...")
+
+                    # Initialize status for the current file for UI
+                    st.session_state.file_statuses[filename] = {
+                        "detailed_summary_status": "Pending",
+                        "ratings_status": "Pending",
+                        "concise_summary_status": "Pending",
+                        "pdf_report_status": "Pending"
+                    }
+                    update_progress_ui(progress_bar, status_placeholder, st.session_state.file_statuses, num_files)
+
+                    current_file_result = {
+                        "file": filename,
+                        "detailed_summary": None,
+                        "summary": None, # This will hold concise summary, or detailed if concise fails
+                        "ratings": None,
+                        "pdf_table_data": None,
+                        "report_pdf_path": None
+                    }
+
                     extracted_text = extract_text_from_pdf(uploaded_file)
                     if extracted_text:
-                        detailed_summary = get_gemini_detailed_summary(gemini_api_key, extracted_text) # Store as detailed_summary first
+                        st.session_state.file_statuses[filename]["detailed_summary_status"] = "In Progress"
+                        update_progress_ui(progress_bar, status_placeholder, st.session_state.file_statuses, num_files)
+                        detailed_summary = get_gemini_detailed_summary(
+                            gemini_api_key, 
+                            extracted_text, 
+                            processing_timeout, 
+                            retry_count
+                        )
                         if detailed_summary:
-                            st.subheader(f"Detailed Summary for {uploaded_file.name}:")
-                            st.markdown(detailed_summary)
-                            # Initialize with detailed_summary, add other fields as they are generated
-                            current_file_result = {
-                                "file": uploaded_file.name, 
-                                "detailed_summary": detailed_summary, # Store the original detailed summary
-                                "summary": detailed_summary, # This will be replaced by concise if available
-                                "ratings": None, 
-                                "pdf_table_data": None, 
-                                "report_pdf_path": None
-                            }
-
-                            # Step 10: Get Concise Summary from OpenAI
-                            concise_summary = None
-                            if openai_api_key: 
-                                concise_summary = get_openai_concise_summary(openai_api_key, detailed_summary) # Pass detailed_summary
-                                if concise_summary:
-                                    st.subheader(f"Concise Summary for {uploaded_file.name}:") # Removed (GPT-4o)
-                                    st.markdown(concise_summary)
-                                    current_file_result["summary"] = concise_summary # Replace summary with concise one for PDF main body
-                                else:
-                                    st.warning(f"Could not generate concise summary for {uploaded_file.name}. Using detailed summary in main report.")
-                            else:
-                                st.warning("OpenAI API Key not provided. Skipping concise summary generation. Detailed summary will be used in main report.")
-                            
-                            results.append(current_file_result) 
-                            
-                            ratings_justifications = get_gemini_ratings_and_justifications(
-                                gemini_api_key,
-                                current_file_result["summary"], # Use the (potentially concise) summary for ratings context
-                                ba_scale_content,
-                                schema_example_content 
-                            )
-                            if ratings_justifications:
-                                st.subheader(f"Ratings & Justifications (JSON) for {uploaded_file.name}:")
-                                st.json(ratings_justifications) 
-                                current_file_result["ratings"] = ratings_justifications
-
-                                # Step 11: Assemble table data
-                                if ba_scale_dictionary: # Ensure ba_scale_dictionary was successfully parsed
-                                    pdf_table_data = prepare_data_for_pdf_tables(ratings_justifications, ba_scale_dictionary)
-                                    current_file_result["pdf_table_data"] = pdf_table_data
-                                    st.subheader(f"Prepared Data for PDF Tables (File: {uploaded_file.name})")
-                                    st.json(pdf_table_data) # Displaying for verification
-
-                                    # Step 12: Generate PDF Report
-                                    original_fname_base, _ = os.path.splitext(uploaded_file.name)
-                                    report_path = generate_pdf_report(current_file_result, original_fname_base, include_detailed_summary_appendix) # Pass checkbox state
-                                    if report_path:
-                                        current_file_result["report_pdf_path"] = report_path
-                                        with open(report_path, "rb") as pdf_file:
-                                            st.download_button(
-                                                label=f"Download Report for {uploaded_file.name}",
-                                                data=pdf_file,
-                                                file_name=os.path.basename(report_path),
-                                                mime="application/pdf"
-                                            )
-                                else:
-                                    st.warning(f"Skipping PDF table data preparation for {uploaded_file.name} due to ba-scale.md parsing issues.")
-                            else:
-                                st.warning(f"Could not generate ratings/justifications for {uploaded_file.name}.")
+                            current_file_result["detailed_summary"] = detailed_summary
+                            current_file_result["summary"] = detailed_summary # Default to detailed
+                            st.session_state.file_statuses[filename]["detailed_summary_status"] = "Complete"
                         else:
-                            st.warning(f"Could not generate summary for {uploaded_file.name}.")
-                    else:
-                        st.warning(f"Could not extract text from {uploaded_file.name}.")
-                
-                if any(r.get("summary") for r in results): # Check if any summary was generated
+                            st.session_state.file_statuses[filename]["detailed_summary_status"] = "Error"
+                            st.session_state.file_statuses[filename]["ratings_status"] = "Skipped (Summary Error)"
+                            st.session_state.file_statuses[filename]["concise_summary_status"] = "Skipped (Summary Error)"
+                            st.session_state.file_statuses[filename]["pdf_report_status"] = "Skipped (Summary Error)"
+                            results.append(current_file_result) # Append even if error to show in results
+                            update_progress_ui(progress_bar, status_placeholder, st.session_state.file_statuses, num_files)
+                            continue 
+
+                        # Step 9: Get ratings and justifications from Gemini
+                        st.session_state.file_statuses[filename]["ratings_status"] = "In Progress"
+                        update_progress_ui(progress_bar, status_placeholder, st.session_state.file_statuses, num_files)
+                        ratings_justifications_json = get_gemini_ratings_and_justifications(
+                            gemini_api_key,
+                            extracted_text, 
+                            ba_scale_content,
+                            schema_example_content,
+                            processing_timeout,
+                            retry_count
+                        )
+                        if ratings_justifications_json:
+                            current_file_result["ratings"] = ratings_justifications_json
+                            st.session_state.file_statuses[filename]["ratings_status"] = "Complete"
+                            # Display JSON for verification (optional, can be removed)
+                            st.subheader(f"Ratings & Justifications (JSON) for {filename}:")
+                            st.json(ratings_justifications_json) 
+                        else:
+                            st.session_state.file_statuses[filename]["ratings_status"] = "Error"
+                            st.session_state.file_statuses[filename]["pdf_report_status"] = "Skipped (Ratings Error)"
+                            results.append(current_file_result)
+                            update_progress_ui(progress_bar, status_placeholder, st.session_state.file_statuses, num_files)
+                            continue
+
+                        # Step 10: Get Concise Summary from OpenAI (if API key provided)
+                        if openai_api_key and current_file_result["detailed_summary"]:
+                            st.session_state.file_statuses[filename]["concise_summary_status"] = "In Progress"
+                            update_progress_ui(progress_bar, status_placeholder, st.session_state.file_statuses, num_files)
+                            concise_summary = get_openai_concise_summary(
+                                openai_api_key, 
+                                current_file_result["detailed_summary"], # Use from current_file_result
+                                processing_timeout, 
+                                retry_count
+                            )
+                            if concise_summary:
+                                current_file_result["summary"] = concise_summary # Update summary to concise
+                                st.session_state.file_statuses[filename]["concise_summary_status"] = "Complete"
+                                # Display concise summary (optional)
+                                st.subheader(f"Concise Summary for {filename}:")
+                                st.markdown(concise_summary)
+                            else:
+                                st.session_state.file_statuses[filename]["concise_summary_status"] = "Error (Using Detailed)"
+                                # current_file_result["summary"] already holds detailed_summary
+                        else:
+                            if not openai_api_key:
+                                st.session_state.file_statuses[filename]["concise_summary_status"] = "Skipped (No API Key)"
+                            else: # No detailed summary to work with
+                                st.session_state.file_statuses[filename]["concise_summary_status"] = "Skipped (No Detailed Summary)"
+
+                        update_progress_ui(progress_bar, status_placeholder, st.session_state.file_statuses, num_files)
+
+                        # Step 11: Assemble table data (ensure ratings are available)
+                        if current_file_result["ratings"] and ba_scale_dictionary:
+                            pdf_table_data = prepare_data_for_pdf_tables(current_file_result["ratings"], ba_scale_dictionary)
+                            current_file_result["pdf_table_data"] = pdf_table_data
+                            # Display table data (optional)
+                            st.subheader(f"Prepared Data for PDF Tables (File: {filename})")
+                            st.json(pdf_table_data) 
+                        else:
+                            if not current_file_result["ratings"]:
+                                st.warning(f"Skipping PDF table data for {filename} as ratings are missing.")
+                            # ba_scale_dictionary failure is handled earlier
+                            st.session_state.file_statuses[filename]["pdf_report_status"] = "Skipped (Table Data Error)"
+                            results.append(current_file_result) # Append partial result
+                            update_progress_ui(progress_bar, status_placeholder, st.session_state.file_statuses, num_files)
+                            continue 
+
+                        # Step 12: Generate PDF Report (ensure table data is available)
+                        if current_file_result["pdf_table_data"]:
+                            st.session_state.file_statuses[filename]["pdf_report_status"] = "In Progress"
+                            update_progress_ui(progress_bar, status_placeholder, st.session_state.file_statuses, num_files)
+                            original_fname_base, _ = os.path.splitext(filename)
+                            report_path = generate_pdf_report(current_file_result, original_fname_base, include_detailed_summary_appendix)
+                            if report_path:
+                                current_file_result["report_pdf_path"] = report_path
+                                st.session_state.file_statuses[filename]["pdf_report_status"] = "Complete"
+                                with open(report_path, "rb") as pdf_file_to_download:
+                                    st.download_button(
+                                        label=f"Download Report for {filename}",
+                                        data=pdf_file_to_download,
+                                        file_name=os.path.basename(report_path),
+                                        mime="application/pdf",
+                                        key=f"download_{filename}" # Unique key for download button
+                                    )
+                            else:
+                                st.session_state.file_statuses[filename]["pdf_report_status"] = "Error"
+                        else:
+                             st.warning(f"Skipping PDF report generation for {filename} as table data is missing.")
+                             st.session_state.file_statuses[filename]["pdf_report_status"] = "Skipped (No Table Data)"
+
+                    else: # Extracted text failed
+                        st.warning(f"Could not extract text from {filename}. Skipping further processing.")
+                        st.session_state.file_statuses[filename]["detailed_summary_status"] = "Skipped (Extraction Error)"
+                        st.session_state.file_statuses[filename]["ratings_status"] = "Skipped"
+                        st.session_state.file_statuses[filename]["concise_summary_status"] = "Skipped"
+                        st.session_state.file_statuses[filename]["pdf_report_status"] = "Skipped"
+                   
+                    results.append(current_file_result) # Append result for the file
+                    update_progress_ui(progress_bar, status_placeholder, st.session_state.file_statuses, num_files)
+               
+                # Final update to progress UI after loop
+                update_progress_ui(progress_bar, status_placeholder, st.session_state.file_statuses, num_files)
+
+                if any(r.get("report_pdf_path") for r in results): 
                     st.success("Processing complete for all uploaded files!")
                 else:
                     st.warning("Processing finished, but no summaries were generated.")

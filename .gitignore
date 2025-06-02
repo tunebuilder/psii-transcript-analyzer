@@ -93,5 +93,7 @@ env.bak/
 *.swp
 
 # User-specific directories
-docs/
+docs/*
+!docs/ba-scale.md
+!docs/schema.md
 outputs/ 
